@@ -343,6 +343,23 @@ class communication_object
 
         return {this};
     }
+
+    /** @brief Start a synchronized exchange of several ranges of buffer_info objects.
+      *
+      * Same semantics as the single-range overload. Each range may hold a different field
+      * type (e.g. double and float); the halos of all ranges for one neighbor are packed into
+      * the same message. */
+    template<typename Iterator0, typename Iterator1, typename... Iterators>
+    [[nodiscard]] disable_if_buffer_info<Iterator0, handle_type> schedule_exchange(
+        cudaStream_t stream, Iterator0 first0, Iterator0 last0, Iterator1 first1, Iterator1 last1,
+        Iterators... iters)
+    {
+        static_assert(sizeof...(Iterators) % 2 == 0,
+            "need even number of iterators: (begin, end) pairs");
+        return schedule_exchange_make_pairs(stream,
+            std::make_index_sequence<2 + sizeof...(iters) / 2>(), first0, last0, first1, last1,
+            iters...);
+    }
 #endif
 
     /** @brief  non-blocking exchange of halo data
@@ -415,6 +432,37 @@ class communication_object
         // call exchange with pairs of iterators
         return exchange(std::make_pair(std::get<2 * Is>(iter_t), std::get<2 * Is + 1>(iter_t))...);
     }
+
+#if defined(GHEX_CUDACC)
+    // scheduled exchange for pairs of iterators
+    template<typename... Iterators>
+    [[nodiscard]] handle_type schedule_exchange_pairs(cudaStream_t stream,
+        std::pair<Iterators, Iterators>... iter_pairs)
+    {
+        complete_schedule_exchange();
+        prepare_exchange_buffers(iter_pairs...);
+        schedule_sync_pack_unpack(stream);
+
+        pack();
+        m_comm.start_group();
+        post_recvs();
+        post_sends();
+        m_comm.end_group();
+        unpack();
+
+        return {this};
+    }
+
+    // helper function to turn iterators into pairs of iterators (scheduled exchange)
+    template<std::size_t... Is, typename... Iterators>
+    [[nodiscard]] handle_type schedule_exchange_make_pairs(cudaStream_t stream,
+        std::index_sequence<Is...>, Iterators... iters)
+    {
+        const std::tuple<Iterators...> iter_t{iters...};
+        return schedule_exchange_pairs(stream,
+            std::make_pair(std::get<2 * Is>(iter_t), std::get<2 * Is + 1>(iter_t))...);
+    }
+#endif
 
     // special function to handle one iterator pair (optimization for gpus below)
     template<typename Iterator>

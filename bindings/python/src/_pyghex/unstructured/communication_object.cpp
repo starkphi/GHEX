@@ -125,6 +125,44 @@ register_communication_object(nanobind::module_& m)
                         ;
                 });
 
+            // Mixed precision: double and float fields of the same arch in one exchange, so the
+            // halos of both travel in one message per neighbor (instead of two exchanges).
+            gridtools::for_each<gridtools::meta::transform<gridtools::meta::list, types::archs>>(
+                [&_communication_object](auto a)
+                {
+                    using arch_type = gridtools::meta::first<decltype(a)>;
+                    using domain_id_type = gridtools::meta::first<types::domain_ids>;
+                    using global_id_type = gridtools::meta::first<types::global_ids>;
+                    using field_dp = ghex::unstructured::data_descriptor<arch_type, domain_id_type,
+                        global_id_type, double>;
+                    using field_sp = ghex::unstructured::data_descriptor<arch_type, domain_id_type,
+                        global_id_type, float>;
+                    using buffer_info_dp = ghex::buffer_info<pattern_type, arch_type, field_dp>;
+                    using buffer_info_sp = ghex::buffer_info<pattern_type, arch_type, field_sp>;
+
+                    _communication_object
+                        .def(
+                            "exchange",
+                            [](type& co, std::vector<buffer_info_dp> b_dp,
+                                std::vector<buffer_info_sp> b_sp)
+                            { return co.exchange(b_dp.begin(), b_dp.end(), b_sp.begin(), b_sp.end()); },
+                            nanobind::keep_alive<0, 1>(), nanobind::arg("patterns_double"),
+                            nanobind::arg("patterns_float"))
+#if defined(GHEX_CUDACC)
+                        .def(
+                            "schedule_exchange",
+                            [](type& co, nanobind::object python_stream,
+                                std::vector<buffer_info_dp> b_dp, std::vector<buffer_info_sp> b_sp)
+                            {
+                                return co.schedule_exchange(extract_cuda_stream(python_stream),
+                                    b_dp.begin(), b_dp.end(), b_sp.begin(), b_sp.end());
+                            },
+                            nanobind::keep_alive<0, 1>(), nanobind::arg("stream").none(),
+                            nanobind::arg("patterns_double"), nanobind::arg("patterns_float"))
+#endif
+                        ;
+                });
+
             m.def(
                 "make_co_unstructured", [](context_shim& c) { return type{c.m}; },
                 nanobind::keep_alive<0, 1>());
