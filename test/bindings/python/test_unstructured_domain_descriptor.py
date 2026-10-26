@@ -213,7 +213,10 @@ domains = {
 
 LEVELS = 2
 
-@pytest.mark.parametrize("dtype", [np.float64, np.float32, np.int32, np.int64])
+# A pair of dtypes exchanges one field of each type in one call (mixed precision).
+@pytest.mark.parametrize(
+    "dtype", [np.float64, np.float32, np.int32, np.int64, (np.float64, np.float32)]
+)
 @pytest.mark.parametrize(
     "gpu_and_stream", [(False, None)] + [(True, kind) for kind in STREAM_KINDS]
 )
@@ -243,7 +246,9 @@ def test_domain_descriptor(gpu_and_stream, cart_context, dtype):
     assert domain_desc.size() == len(domains[ctx.rank()]["all"])
     assert domain_desc.inner_size() == len(domains[ctx.rank()]["inner"])
 
-    def make_field(order):
+    dtype1, dtype2 = dtype if isinstance(dtype, tuple) else (dtype, dtype)
+
+    def make_field(order, dtype):
         # Creation is always on host.
         data = np.zeros(
             [len(domains[ctx.rank()]["all"]), LEVELS], dtype=dtype, order=order
@@ -281,13 +286,13 @@ def test_domain_descriptor(gpu_and_stream, cart_context, dtype):
         if stream_kind is None:
             if gpu:
                 cp.cuda.Device().synchronize()
-            handle = co.exchange(buffer_infos)
+            handle = co.exchange(*buffer_infos)
             handle.wait()
             return [cp.asnumpy(a) for a in arrays] if gpu else list(arrays)
 
         if cuda_stream.ptr != 0:
             cuda_stream.wait_event(cp.cuda.get_current_stream().record())
-        handle = co.schedule_exchange(ghex_stream, buffer_infos)
+        handle = co.schedule_exchange(ghex_stream, *buffer_infos)
         assert not co.has_scheduled_exchange()
         handle.schedule_wait(ghex_stream)
         assert co.has_scheduled_exchange()
@@ -304,8 +309,12 @@ def test_domain_descriptor(gpu_and_stream, cart_context, dtype):
     pattern = make_pattern(ctx, halo_gen, [domain_desc])
     co = make_communication_object(ctx)
 
-    d1, f1 = make_field("C")
-    d2, f2 = make_field("F")
+    d1, f1 = make_field("C", dtype1)
+    d2, f2 = make_field("F", dtype2)
 
-    for data in exchange([pattern(f1), pattern(f2)], [d1, d2]):
+    if dtype1 == dtype2:
+        buffer_infos = ([pattern(f1), pattern(f2)],)
+    else:
+        buffer_infos = ([pattern(f1)], [pattern(f2)])  # patterns_double, patterns_float
+    for data in exchange(buffer_infos, [d1, d2]):
         check_field(data)
